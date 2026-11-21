@@ -1,0 +1,7 @@
+services:
+  leadershl:
+    build: .
+    env_file: .env
+    environment:
+      WS_URL: ws://host.docker.internal:7000
+    restart: unless-stopped

@@ -1,0 +1,5 @@
+websockets
+requests
+apscheduler
+python-dotenv
+tzdata
