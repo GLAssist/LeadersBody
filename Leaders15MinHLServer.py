@@ -1,7 +1,9 @@
+from cProfile import label
 import asyncio, json, os
 import os
 import requests
 import websockets
+import numpy as np
 from datetime import date, timedelta, time as dtime
 from zoneinfo import ZoneInfo
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -47,22 +49,58 @@ def GetScriptOHLC(instrument='256265', timeframe=15, timeunit='minute', ):
     except requests.exceptions.RequestException as err:
         print(f"Error occurred: {err}")
 
+def GetCandleAvgBody(matrix):
+
+    if not matrix:
+        return 0
+
+    close = matrix[-1][4]
+
+    highs = np.array([x[2] for x in matrix[:-1]])
+    lows = np.array([x[3] for x in matrix[:-1]])
+
+    unqhighs = np.unique(highs)
+    unqlows = np.unique(lows)
+
+    if len(unqhighs) < 2 or len(unqlows) < 2:
+        return 0
+
+    maxOfHigh = unqhighs[-1]
+    secondMaxOfHigh = np.average(unqhighs)
+    minOfHigh = unqhighs[0]
+
+    maxOfLow = unqlows[-1]
+    secondLowOfLow = np.average(unqlows)
+    minOfLow = unqlows[0]
+
+    levels = [
+        maxOfHigh,
+        secondMaxOfHigh,
+        minOfHigh,
+        maxOfLow,
+        secondLowOfLow,
+        minOfLow
+    ]
+
+    # Remove crossing inner levels
+    while len(levels) > 2:
+        mid = len(levels) // 2
+
+        if levels[mid - 1] <= levels[mid]:
+            del levels[mid - 1:mid + 1]
+        else:
+            break
+
+    counter = sum(close > price for price in levels)
+
+    return counter/len(levels)
+
 def ScriptsOHLC():
     scriptHL = {}
     for item in scripts:
         scriptCandles = GetScriptOHLC(item["instrument_token"])
-        
-        # Ensure at least 2 candles exist before accessing [-2]
-        if len(scriptCandles) >= 2:
-            high = 0
-            low = 0
-            for x in scriptCandles:
-                diff = abs(x[4]-x[1])
-                if(diff >= x[1]*0.0025):
-                    high = x[2]
-                    low = x[3]
-
-            scriptHL[item["tradingsymbol"]] = [high, low]
+        sentiment = GetCandleAvgBody(scriptCandles)
+        scriptHL[item["tradingsymbol"]] = sentiment
 
     print(scriptHL)       
     return scriptHL

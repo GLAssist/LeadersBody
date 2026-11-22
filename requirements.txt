@@ -1,5 +1,7 @@
 websockets
 requests
+numpy
+pandas
 apscheduler
 python-dotenv
 tzdata

@@ -1,5 +1,6 @@
 services:
   leadershl:
+    image: ${DOCKERHUB_USERNAME}/leadershl-1.0.0
     build: .
     env_file: .env
     environment:
