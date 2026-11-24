@@ -22,7 +22,7 @@ SERVER = os.getenv("SERVER")
 # Load Scripts 
 scripts = json.load(open("scripts.json", "r", encoding="utf-8"))
 
-stream_data = defaultdict(lambda: deque(maxlen=1200))
+stream_data = defaultdict(list)
 
 
 def GetScriptOHLC(instrument='256265', timeframe=15, timeunit='minute', ):
@@ -157,6 +157,8 @@ async def handler(websocket):
                             print(f"New symbol added: {symbol}")
                             
                         stream_data[symbol].append(close_price)
+                        if len(stream_data[symbol]) > 1200:
+                            stream_data[symbol].pop(0)
 
                 sentiment = await asyncio.to_thread(SentimentMatrix)   # blocking requests -> thread
                 if sentiment:
