@@ -17,7 +17,7 @@ LATEST = None          # last payload, sent to new clients on connect
 #  Loading Environment
 ENCTOKEN = os.getenv("ENCTOKEN")
 USER = os.getenv("USER_ID")
-
+SERVER = os.getenv("SERVER")
 # Load Scripts 
 scripts = json.load(open("scripts.json", "r", encoding="utf-8"))
 
@@ -106,12 +106,12 @@ def ScriptsOHLC():
     return scriptHL
 
 
-URL = os.getenv("WS_URL", "ws://localhost:7000")
+URL = os.getenv("WS_URL", f"ws://{SERVER}:7000")
 
 async def run_sender():
     while True:                                          # reconnect loop
         try:
-            async with websockets.connect(URL) as ws:
+            async with websockets.connect(URL, subprotocols=['LeadersBody_Sender']) as ws:
                 print("connected")
                 while True:
                     OHLC = await asyncio.to_thread(ScriptsOHLC)   # blocking requests -> thread
