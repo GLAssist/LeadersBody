@@ -4,7 +4,7 @@ import os
 import requests
 import websockets
 import numpy as np
-from collections import defaultdict
+from collections import defaultdict, deque
 from datetime import date, timedelta, time as dtime
 from zoneinfo import ZoneInfo
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -22,7 +22,7 @@ SERVER = os.getenv("SERVER")
 # Load Scripts 
 scripts = json.load(open("scripts.json", "r", encoding="utf-8"))
 
-stream_data = defaultdict(list)
+stream_data = defaultdict(lambda: deque(maxlen=1200))
 
 
 def GetScriptOHLC(instrument='256265', timeframe=15, timeunit='minute', ):
