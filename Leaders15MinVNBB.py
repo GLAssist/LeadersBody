@@ -1,6 +1,7 @@
 from cProfile import label
+from urllib.parse import urlparse
+from enum import Enum
 import asyncio, json, os
-import os
 import requests
 import websockets
 import numpy as np
@@ -23,10 +24,16 @@ SERVER = os.getenv("SERVER")
 # Load Scripts 
 scripts = json.load(open("scripts.json", "r", encoding="utf-8"))
 # Calculate the next 11:00 AM
-now = datetime.now()
+now = datetime.now(IST)
 start_time = now.replace(hour=10, minute=10, second=0, microsecond=0)
-big_time_flag = False
+
 stream_data = defaultdict(list)
+
+class ExecutionMode(Enum):
+    STREAMING = 1
+    SCHEDULED = 2
+
+execution_mode = ExecutionMode.STREAMING
 
 
 def GetScriptOHLC(instrument='256265', timeframe=15, timeunit='minute', ):
@@ -46,7 +53,7 @@ def GetScriptOHLC(instrument='256265', timeframe=15, timeunit='minute', ):
         
         # If the API returns JSON, parse it
         data = response.json()
-        candles = data.get('data').get('candles')
+        candles = data.get('data', {}).get('candles', [])
         return candles
     
     except requests.exceptions.Timeout:
@@ -90,92 +97,133 @@ def ScriptsOHLC():
     return martix
 
 def SentimentMatrix():
-    martix = defaultdict(list)
+    matrix = defaultdict(list)
+
     for symbol, prices in stream_data.items():
-        num_groups = len(prices) // 3  # Size of each of the 3 slices
-        
-        # Triggers once each of the 3 slices has at least 5 elements (length >= 15)
+        num_groups = len(prices) // 3
+
         if num_groups > 4:
-            # 1. Slice from the left to keep only 3 * num_groups elements
-            left_slice = np.array(prices[:3 * num_groups])
-            
-            # 2. Reshape into 3 rows, each of length 'num_groups'
-            three_slices = left_slice.reshape(3, num_groups)
-            
-            # 3. Get High (max) and Low (min) for each of the 3 slices
-            slice_highs = three_slices.max(axis=1)
-            slice_lows = three_slices.min(axis=1)
-            
-            # print(f"--- {symbol} (3 slices of size {num_groups}) ---")
-            for i in range(1, 3):
-                if ((slice_highs[i] > slice_highs[i-1]) and (slice_lows[i] > slice_lows[i-1])):
-                    martix[symbol].append('U')
-                elif ((slice_highs[i] < slice_highs[i-1]) and (slice_lows[i] < slice_lows[i-1])):
-                    martix[symbol].append('D')
-                elif ((slice_highs[i] < slice_highs[i-1]) and (slice_lows[i] > slice_lows[i-1])):
-                    martix[symbol].append('N')
-                elif ((slice_highs[i] > slice_highs[i-1]) and (slice_lows[i] < slice_lows[i-1])):
-                    martix[symbol].append('V') 
+            max_price = prices.max()
+            min_price = prices.min()
 
-    return martix
+            rel_position = round(
+                (prices[-1] - min_price) /
+                (max_price - min_price) * 100, 2
+            )
 
-URL = os.getenv("WS_URL", f"ws://{SERVER}:7000")
+            three_slices = prices[:3 * num_groups].reshape(3, num_groups)
+
+            highs = three_slices.max(axis=1)
+            lows = three_slices.min(axis=1)
+
+            for i in (1, 2):
+                hh = highs[i] > highs[i-1]
+                lh = lows[i] > lows[i-1]
+
+                if hh and lh:
+                    matrix[symbol].append('U')
+                elif not hh and not lh:
+                    matrix[symbol].append('D')
+                elif not hh and lh:
+                    matrix[symbol].append('N')
+                elif hh and not lh:
+                    matrix[symbol].append('V')
+
+            matrix[symbol].append(rel_position)
+
+    return matrix
 
 
 async def handler(websocket):
+    global execution_mode
     print("Client connected")
 
-    if not big_time_flag:
-        try:
-            async for message in websocket:
-                data = json.loads(message)
-                hlc_data = data.get("HLC")
-                if isinstance(hlc_data, dict):
-                    for symbol, values in hlc_data.items():
-                        close_price = values.get("Close")
-                        
-                        if close_price is not None:
-                            if symbol not in stream_data:
-                                print(f"New symbol added: {symbol}")
-                                
-                            stream_data[symbol].append(close_price)
-                            if len(stream_data[symbol]) > 1200:
-                                stream_data[symbol].pop(0)
+    try:
+        async for message in websocket:
 
-                    sentiment = await asyncio.to_thread(SentimentMatrix)   # blocking requests -> thread
-                    if sentiment:
-                        await websocket.send(json.dumps({'LeadersSentiment': sentiment}))
-                        print("sent", len(sentiment), sentiment)
-                    else:
-                        print("no data")
-        except websockets.ConnectionClosed:
-            print("Client disconnected")
+            # Ignore incoming tick processing in scheduled mode
+            if execution_mode != ExecutionMode.STREAMING:
+                continue
+
+            data = json.loads(message)
+            hlc_data = data.get("HLC")
+            if isinstance(hlc_data, dict):
+                for symbol, values in hlc_data.items():
+                    close_price = values.get("Close")
+                    
+                    if close_price is not None:
+                        if symbol not in stream_data:
+                            print(f"New symbol added: {symbol}")
+                            
+                        stream_data[symbol].append(close_price)
+                        if len(stream_data[symbol]) > 1200:
+                            stream_data[symbol].pop(0)
+
+                sentiment = SentimentMatrix()   # blocking requests -> thread
+                if sentiment:
+                    await websocket.send(json.dumps({'LeadersSentiment': sentiment}))
+                    print(f"sent from message: {len(sentiment)}")
+                else:
+                    print("no data")
+    except websockets.ConnectionClosed:
+        print("Client disconnected")
 
 
 async def scheduled_broadcast(websocket):
-    if websocket.state == websockets.protocol.State.OPEN:
-        message = "Periodic update from client!"
+    global execution_mode
+
+    if execution_mode == ExecutionMode.SCHEDULED:
+        return
+
+    try:
+        # Stop live sentiment processing
+        execution_mode = ExecutionMode.SCHEDULED
+
+        print("Switching to SCHEDULED mode")       
+
         sentiment = await asyncio.to_thread(ScriptsOHLC)
         if sentiment:
-            big_time_flag = True # here we are stopping message based sentiment sending
             await websocket.send(json.dumps({'LeadersSentiment': sentiment}))
-        print(f"Sent: {len(sentiment)}")
+            print(f"Sent feom schedule: {len(sentiment)}")
+    except websockets.ConnectionClosed:
+        print("WebSocket disconnected during scheduled broadcast")
+
+    except Exception as e:
+        print(f"Scheduled broadcast error: {e}")           
+
+
+URL = os.getenv("WS_URL", f"ws://{SERVER}:7000")
+
+async def check_socket(url, timeout=3):
+    parsed = urlparse(url)
+    host = parsed.hostname
+    port = parsed.port or (443 if parsed.scheme == "wss" else 80)
+
+    try:
+        # Attempt to open a raw TCP socket connection
+        reader, writer = await asyncio.wait_for(
+            asyncio.open_connection(host, port),
+            timeout=timeout
+        )
+        # Close the test socket immediately
+        writer.close()
+        await writer.wait_closed()
+        return True
+    except (OSError, asyncio.TimeoutError):
+        return False
 
 async def run_sender():
-    # Initialize and start the async scheduler on the current event loop
-    scheduler = AsyncIOScheduler()
-    
-    async with websockets.connect(URL, subprotocols=['LeadersSentimentProvider_Receiver']) as ws:
-        print(f"Server listening on {URL}")   
-        scheduler.add_job(scheduled_broadcast, 'interval', seconds=10, start_date=start_time, args=[ws])
-        scheduler.start()     
-        try:
-            # This keeps the connection alive and listens for incoming messages
-            await handler(ws)
-        finally:
-            # Clean up the job if the WebSocket disconnects
-            scheduler.shutdown()
-        await asyncio.Future()  # Keeps the server running forever
+
+    if await check_socket(URL):  
+        print("Socket is open! Connecting to WebSocket...")  
+        async with websockets.connect(URL, subprotocols=['LeadersSentimentProvider_Receiver']) as ws:
+            print("Connected!")
+            try:
+                # This keeps the connection alive and listens for incoming messages
+                await handler(ws)
+            finally:
+                pass
+            await asyncio.Future()  # Keeps the server running forever
 
 
 asyncio.run(run_sender())
