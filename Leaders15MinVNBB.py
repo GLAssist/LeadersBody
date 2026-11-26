@@ -103,15 +103,16 @@ def SentimentMatrix():
         num_groups = len(prices) // 3
 
         if num_groups > 4:
-            max_price = prices.max()
-            min_price = prices.min()
+            np_price = np.array(prices)
+            max_price = max(np_price)
+            min_price = min(np_price)
 
             rel_position = round(
-                (prices[-1] - min_price) /
+                (np_price[-1] - min_price) /
                 (max_price - min_price) * 100, 2
             )
 
-            three_slices = prices[:3 * num_groups].reshape(3, num_groups)
+            three_slices = np_price[:3 * num_groups].reshape(3, num_groups)
 
             highs = three_slices.max(axis=1)
             lows = three_slices.min(axis=1)
